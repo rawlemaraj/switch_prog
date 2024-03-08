@@ -1,0 +1,57 @@
+import re
+import yaml  # Import the PyYAML library
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from netmiko import ConnectHandler
+
+# Load device configurations from a YAML file
+with open('devices.yaml', 'r') as file:
+    devices = yaml.safe_load(file)
+
+# Define the command to check port status, the statuses to look for, and the shutdown command
+status_command = 'show interfaces status'
+target_statuses = ['notconnect', 'down', 'disabled']
+shutdown_command = 'shutdown'
+
+def get_down_ports(device, command, statuses):
+    down_ports = []
+    try:
+        with ConnectHandler(**device) as net_connect:
+            net_connect.enable()
+            output = net_connect.send_command(command, delay_factor=2)
+            line_re = re.compile(r'^(\S+)\s+.*\s+(' + '|'.join(statuses) + r')\s+', re.IGNORECASE)
+
+            for line in output.splitlines():
+                match = line_re.search(line)
+                if match:
+                    port = match.group(1)
+                    down_ports.append(port)
+    except Exception as e:
+        print(f"An error occurred on {device['ip']}: {e}")
+    return down_ports, device['ip']
+
+def shutdown_ports(device, ports, shutdown_cmd):
+    try:
+        with ConnectHandler(**device) as net_connect:
+            net_connect.enable()
+            for port in ports:
+                config_commands = [f'interface {port}', shutdown_cmd]
+                net_connect.send_config_set(config_commands)
+                print(f"Shut down {port} on {device['ip']}")
+    except Exception as e:
+        print(f"An error occurred while shutting down ports on {device['ip']}: {e}")
+
+def process_device(device):
+    down_ports, ip = get_down_ports(device, status_command, target_statuses)
+    if down_ports:
+        print(f"Device {ip} - Ports to be shut down: {', '.join(down_ports)}")
+        # Uncomment the next line to actually shut down the ports
+        # shutdown_ports(device, down_ports, shutdown_command)
+    else:
+        print(f"Device {ip} - No down ports found.")
+
+# Use ThreadPoolExecutor to run the script concurrently across all devices from the YAML file
+with ThreadPoolExecutor(max_workers=len(devices)) as executor:
+    futures = [executor.submit(process_device, device) for device in devices]
+
+    for future in as_completed(futures):
+        future.result()  # Retrieve the result to handle any exceptions raised
